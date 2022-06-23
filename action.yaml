@@ -1,0 +1,91 @@
+name: Build & Push
+
+description: Build, test & push your docker images
+
+inputs:
+  image_name:
+    description: name of the docker image to be built
+    required: false
+    default: ghcr.io/${{ github.repository }}
+  gh_pat:
+    description: personal access token to access other repos
+    required: false
+    default: ""
+  run_tests:
+    description: Enable/Disable integration test run
+    required: false
+    default: "true"
+  
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - if: inputs.run_tests == 'true' 
+      name: Checkout integration tests
+      uses: actions/checkout@v3
+      with:
+        repository: prashanth-volvocars/integration-tests
+        token: ${{ inputs.gh_pat }}
+        path: integration-tests
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+
+    - if: inputs.run_tests == 'true'
+      name: Pull docker images
+      shell: bash
+      run: docker-compose pull integration-tests/docker-compose.yaml
+
+    - if: inputs.run_tests == 'true'
+      name: Reset integration test containers
+      shell: bash
+      run: docker-compose down --remove-orphans -v integration-tests/docker-compose.yaml
+    
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
+      with:
+        platforms: arm64
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Build docker image
+      uses: docker/build-push-action@v3
+      with:
+        load: true
+        tags: |
+          ${{ inputs.image_name }}:latest
+          ${{ inputs.image_name }}:${{ github.sha }}
+          ${{ inputs.image_name }}:${{ github.head_ref || github.ref_name }}
+
+    - if: inputs.run_tests == 'true'
+      name: Run integration tests
+      shell: bash
+      run: docker-compose up --build --exit-code-from integration-tests integration-tests/docker-compose.yaml
+
+    - if: github.event_name != 'pull_request'
+      name: Push docker image
+      uses: docker/build-push-action@v3
+      with:
+        platforms: |
+          linux/amd64
+          linux/arm64
+        push: true
+        tags: |
+          ${{ inputs.image_name }}:latest
+          ${{ inputs.image_name }}:${{ github.sha }}
+          ${{ inputs.image_name }}:${{ github.head_ref || github.ref_name }}
+
+    - if: github.event_name != 'pull_request'
+      name: Publish Deployment Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-artifacts
+        path: |
+          deploy
